@@ -346,10 +346,16 @@ void freeStreamObject(robj *o) {
     freeStream(o->ptr);
 }
 
+/**
+ * 自增引用计数
+ * @param o
+ */
 void incrRefCount(robj *o) {
     if (o->refcount != OBJ_SHARED_REFCOUNT) o->refcount++;
 }
-
+/**
+ * 减少引用计数
+ */
 void decrRefCount(robj *o) {
     if (o->refcount == 1) {
         switch(o->type) {
@@ -362,6 +368,7 @@ void decrRefCount(robj *o) {
         case OBJ_STREAM: freeStreamObject(o); break;
         default: serverPanic("Unknown object type"); break;
         }
+        // 释放redisObject
         zfree(o);
     } else {
         if (o->refcount <= 0) serverPanic("decrRefCount against refcount <= 0");

@@ -51,6 +51,11 @@
  * Empty entries have the key pointer set to NULL. */
 #define EVPOOL_SIZE 16
 #define EVPOOL_CACHED_SDS_SIZE 255
+
+
+/**
+ * 样本池节点
+ */
 struct evictionPoolEntry {
     unsigned long long idle;    /* Object idle time (inverse frequency for LFU) */
     sds key;                    /* Key name. */
@@ -89,11 +94,16 @@ unsigned int LRU_CLOCK(void) {
  * requested, using an approximated LRU algorithm. */
 unsigned long long estimateObjectIdleTime(robj *o) {
     unsigned long long lruclock = LRU_CLOCK();
+    // server.lru>= o.lru
+    // idle = server.lru-o.lru
     if (lruclock >= o->lru) {
         return (lruclock - o->lru) * LRU_CLOCK_RESOLUTION;
-    } else {
+    }
+    // server.lru < o.lru 正常来说不可能
+    // 时间折返
+    else {
         return (lruclock + (LRU_CLOCK_MAX - o->lru)) *
-                    LRU_CLOCK_RESOLUTION;
+               LRU_CLOCK_RESOLUTION;
     }
 }
 
@@ -158,12 +168,22 @@ void evictionPoolAlloc(void) {
  * We insert keys on place in ascending order, so keys with the smaller
  * idle time are on the left, and keys with the higher idle time on the
  * right. */
-
+/**
+ * 选择样本数据到样本池中
+ * @param dbid 选择的DB
+ * @param sampledict 样本字典
+ * @param keydict key的字典
+ * @param pool 样本池的指针
+ */
 void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
     int j, k, count;
+    // 样本
+    // maxmemory_samples 可配置 默认为5
     dictEntry *samples[server.maxmemory_samples];
 
+    // 从样本字典中获得一些key
     count = dictGetSomeKeys(sampledict,samples,server.maxmemory_samples);
+    // 根据key 获得value redisObject或过期时间
     for (j = 0; j < count; j++) {
         unsigned long long idle;
         sds key;
@@ -171,6 +191,7 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
         dictEntry *de;
 
         de = samples[j];
+        // 获取key
         key = dictGetKey(de);
 
         /* If the dictionary we are sampling from is not the main
@@ -178,14 +199,17 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
          * again in the key dictionary to obtain the value object. */
         if (server.maxmemory_policy != MAXMEMORY_VOLATILE_TTL) {
             if (sampledict != keydict) de = dictFind(keydict, key);
+            // 获得value redisObject
             o = dictGetVal(de);
         }
 
         /* Calculate the idle time according to the policy. This is called
          * idle just because the code initially handled LRU, but is in fact
-         * just a score where an higher score means better candidate. */
+         * just a score  where an higher score means better candidate. */
         if (server.maxmemory_policy & MAXMEMORY_FLAG_LRU) {
+            // 空闲时间计算
             idle = estimateObjectIdleTime(o);
+
         } else if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
             /* When we use an LRU policy, we sort the keys by idle time
              * so that we expire keys starting from greater idle time.
@@ -195,8 +219,11 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
              * frequency subtracting the actual frequency to the maximum
              * frequency of 255. */
             idle = 255-LFUDecrAndReturn(o);
-        } else if (server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL) {
+        }
+        // 有效期
+        else if (server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL) {
             /* In this case the sooner the expire the better. */
+            // 从db.expires中获得 value就是一个有效时间
             idle = ULLONG_MAX - (long)dictGetVal(de);
         } else {
             serverPanic("Unknown eviction policy in evictionPoolPopulate()");
@@ -206,6 +233,8 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
          * First, find the first empty bucket or the first populated
          * bucket that has an idle time smaller than our idle time. */
         k = 0;
+
+        // 插入到key位
         while (k < EVPOOL_SIZE &&
                pool[k].key &&
                pool[k].idle < idle) k++;
@@ -423,6 +452,7 @@ int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *lev
     if (return_ok_asap) return C_OK;
 
     /* Check if we are still over the memory limit. */
+    // 已經使用内存<=最大内存
     if (mem_used <= server.maxmemory) return C_OK;
 
     /* Compute how much memory we need to free. */
@@ -443,6 +473,11 @@ int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *lev
  * were over the limit, but the attempt to free memory was successful.
  * Otehrwise if we are over the memory limit, but not enough memory
  * was freed to return back under the limit, the function returns C_ERR. */
+/**
+ * C_OK 成功
+ * C_ERR 失败
+ * @return
+ */
 int freeMemoryIfNeeded(void) {
     /* By default replicas should ignore maxmemory
      * and just be masters exact copies. */
@@ -457,11 +492,13 @@ int freeMemoryIfNeeded(void) {
      * POV of clients not being able to write, but also from the POV of
      * expires and evictions of keys not being performed. */
     if (clientsArePaused()) return C_OK;
+    // 已使用内存與 最大内存比較，
     if (getMaxmemoryState(&mem_reported,NULL,&mem_tofree,NULL) == C_OK)
         return C_OK;
 
     mem_freed = 0;
 
+    // 不需要清除，已使用>MAX
     if (server.maxmemory_policy == MAXMEMORY_NO_EVICTION)
         goto cant_free; /* We need to free memory, but policy forbids. */
 
@@ -475,23 +512,25 @@ int freeMemoryIfNeeded(void) {
         dict *dict;
         dictEntry *de;
 
+        // lru /lrf /ttl
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
         {
+            // 样本池指针
             struct evictionPoolEntry *pool = EvictionPoolLRU;
 
             while(bestkey == NULL) {
                 unsigned long total_keys = 0, keys;
 
-                /* We don't want to make local-db choices when expiring keys,
-                 * so to start populate the eviction pool sampling keys from
-                 * every DB. */
+               // 循环DB
                 for (i = 0; i < server.dbnum; i++) {
-                    db = server.db+i;
+                    db = server.db + i;
                     dict = (server.maxmemory_policy & MAXMEMORY_FLAG_ALLKEYS) ?
                             db->dict : db->expires;
                     if ((keys = dictSize(dict)) != 0) {
+                        // 选择字典的key到样本池
                         evictionPoolPopulate(i, dict, db->dict, pool);
+                        //
                         total_keys += keys;
                     }
                 }
@@ -528,7 +567,7 @@ int freeMemoryIfNeeded(void) {
             }
         }
 
-        /* volatile-random and allkeys-random policy */
+        /* 淘汰策略是random volatile-random and allkeys-random policy */
         else if (server.maxmemory_policy == MAXMEMORY_ALLKEYS_RANDOM ||
                  server.maxmemory_policy == MAXMEMORY_VOLATILE_RANDOM)
         {
