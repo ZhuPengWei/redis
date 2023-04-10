@@ -28,3 +28,5 @@ deps/lua/src/liblua.a
 .prerequisites
 *.dSYM
 Makefile.dep
+cmake-build-debug
+Makefile

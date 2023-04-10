@@ -702,7 +702,9 @@ int getLongLongFromObject(robj *o, long long *target) {
         value = 0;
     } else {
         serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
+        // 编码是sds OBJ_ENCODING_RAW OBJ_ENCODING_EMBSTR
         if (sdsEncodedObject(o)) {
+            // 字符串转整数  long long
             if (string2ll(o->ptr,sdslen(o->ptr),&value) == 0) return C_ERR;
         } else if (o->encoding == OBJ_ENCODING_INT) {
             value = (long)o->ptr;
@@ -1045,7 +1047,7 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
     mem += dictSize(server.repl_scriptcache_dict) * sizeof(dictEntry) +
         dictSlots(server.repl_scriptcache_dict) * sizeof(dictEntry*);
     if (listLength(server.repl_scriptcache_fifo) > 0) {
-        mem += listLength(server.repl_scriptcache_fifo) * (sizeof(listNode) + 
+        mem += listLength(server.repl_scriptcache_fifo) * (sizeof(listNode) +
             sdsZmallocSize(listNodeValue(listFirst(server.repl_scriptcache_fifo))));
     }
     mh->lua_caches = mem;

@@ -234,18 +234,23 @@ int dbExists(redisDb *db, robj *key) {
  * The function makes sure to return keys not already expired. */
 robj *dbRandomKey(redisDb *db) {
     dictEntry *de;
+    // 丛机的最大循环次数
     int maxtries = 100;
+    // allvolatile:1 db里的key都是设置有效期的key
     int allvolatile = dictSize(db->dict) == dictSize(db->expires);
 
     while(1) {
         sds key;
         robj *keyobj;
-
         de = dictGetRandomKey(db->dict);
         if (de == NULL) return NULL;
 
         key = dictGetKey(de);
+
+        // 创建key对象
         keyobj = createStringObject(key,sdslen(key));
+
+        // 设置了有效期
         if (dictFind(db->expires,key)) {
             if (allvolatile && server.masterhost && --maxtries == 0) {
                 /* If the DB is composed only of keys with an expire set,
@@ -271,8 +276,10 @@ robj *dbRandomKey(redisDb *db) {
 int dbSyncDelete(redisDb *db, robj *key) {
     /* Deleting an entry from the expires dict will not free the sds of
      * the key, because it is shared with the main dictionary. */
+    // 删除过期字典中的key
     if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
     if (dictDelete(db->dict,key->ptr) == DICT_OK) {
+        // 如果是集群 删除映射表中的key
         if (server.cluster_enabled) slotToKeyDel(key);
         return 1;
     } else {
@@ -339,15 +346,23 @@ robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
  * On success the fuction returns the number of keys removed from the
  * database(s). Otherwise -1 is returned in the specific case the
  * DB number is out of range, and errno is set to EINVAL. */
+/**
+ *
+ * @param dbnum 选择要清空的数据库 -1 清空所有数据库
+ * @param flags  是否开启异步标志 1-异步标志
+ * @param callback
+ * @return
+ */
 long long emptyDb(int dbnum, int flags, void(callback)(void*)) {
     int async = (flags & EMPTYDB_ASYNC);
     long long removed = 0;
-
+    // dbnum 小于-1 or 大于16 则返回错误
     if (dbnum < -1 || dbnum >= server.dbnum) {
         errno = EINVAL;
         return -1;
     }
 
+    // -1遍历所有的数据库,否则只遍历dbnum的数据库
     int startdb, enddb;
     if (dbnum == -1) {
         startdb = 0;
@@ -357,21 +372,32 @@ long long emptyDb(int dbnum, int flags, void(callback)(void*)) {
     }
 
     for (int j = startdb; j <= enddb; j++) {
+
+        // 合计所有dict的size
         removed += dictSize(server.db[j].dict);
+
+        // 如果是异步清空
         if (async) {
             emptyDbAsync(&server.db[j]);
-        } else {
+        }
+        // 删除所有的键值对,删除所有键过期的时间
+        else {
             dictEmpty(server.db[j].dict,callback);
             dictEmpty(server.db[j].expires,callback);
         }
     }
+    // 如果开启了集群模式
     if (server.cluster_enabled) {
         if (async) {
+            // 异步移除槽映射
             slotToKeyFlushAsync();
         } else {
+            // 同步删除槽映射
             slotToKeyFlush();
         }
     }
+
+    // 如果清空所有db 清空从数据库
     if (dbnum == -1) flushSlaveKeysWithExpireList();
     return removed;
 }
@@ -1079,7 +1105,10 @@ void setExpire(client *c, redisDb *db, robj *key, long long when) {
     /* Reuse the sds from the main dict in the expire dict */
     kde = dictFind(db->dict,key->ptr);
     serverAssertWithInfo(NULL,key,kde != NULL);
+
+    // 把key添加到过期字典中
     de = dictAddOrFind(db->expires,dictGetKey(kde));
+    // 把value when 添加到de节点
     dictSetSignedIntegerVal(de,when);
 
     int writable_slave = server.masterhost && server.repl_slave_ro == 0;
@@ -1093,12 +1122,16 @@ long long getExpire(redisDb *db, robj *key) {
     dictEntry *de;
 
     /* No expire? return ASAP */
+    // 过期时间大小为0
     if (dictSize(db->expires) == 0 ||
+        // 过期字典中找不到key
        (de = dictFind(db->expires,key->ptr)) == NULL) return -1;
 
     /* The entry was found in the expire dict, this means it should also
      * be present in the main dict (safety check). */
+    // 从字典里找跟key匹配的节点
     serverAssertWithInfo(NULL,key,dictFind(db->dict,key->ptr) != NULL);
+    // 返回过期时间 v.s64
     return dictGetSignedIntegerVal(de);
 }
 
@@ -1183,6 +1216,7 @@ int keyIsExpired(redisDb *db, robj *key) {
  *
  * The return value of the function is 0 if the key is still valid,
  * otherwise the function returns 1 if the key is expired. */
+// 惰性删除 访问时才判断是否过期
 int expireIfNeeded(redisDb *db, robj *key) {
     if (!keyIsExpired(db,key)) return 0;
 
@@ -1197,10 +1231,13 @@ int expireIfNeeded(redisDb *db, robj *key) {
     if (server.masterhost != NULL) return 1;
 
     /* Delete the key */
+    // 服务器的过期键计数+1
     server.stat_expiredkeys++;
+    // 将过期命令传播给aof和从机
     propagateExpire(db,key,server.lazyfree_lazy_expire);
     notifyKeyspaceEvent(NOTIFY_EXPIRED,
         "expired",key,db->id);
+    // 异步处理?
     return server.lazyfree_lazy_expire ? dbAsyncDelete(db,key) :
                                          dbSyncDelete(db,key);
 }

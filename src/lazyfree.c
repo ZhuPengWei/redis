@@ -78,14 +78,18 @@ size_t lazyfreeGetFreeEffort(robj *obj) {
 int dbAsyncDelete(redisDb *db, robj *key) {
     /* Deleting an entry from the expires dict will not free the sds of
      * the key, because it is shared with the main dictionary. */
+    // 删除过期字典的key
     if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
 
     /* If the value is composed of a few allocations, to free in a lazy way
      * is actually just slower... So under a certain limit we just free
      * the object synchronously. */
+    // 在字典中unlink key
     dictEntry *de = dictUnlink(db->dict,key->ptr);
     if (de) {
+        // 获取entry中的value
         robj *val = dictGetVal(de);
+        // 预估空间大小
         size_t free_effort = lazyfreeGetFreeEffort(val);
 
         /* If releasing the object is too much work, do it in the background
@@ -96,9 +100,12 @@ int dbAsyncDelete(redisDb *db, robj *key) {
          * objects, and then call dbDelete(). In this case we'll fall
          * through and reach the dictFreeUnlinkedEntry() call, that will be
          * equivalent to just calling decrRefCount(). */
+        // 空间大于阈值并且没有其他引用 添加到懒删除列表
         if (free_effort > LAZYFREE_THRESHOLD && val->refcount == 1) {
             atomicIncr(lazyfree_objects,1);
+            // 创建后台job释放value
             bioCreateBackgroundJob(BIO_LAZY_FREE,val,NULL,NULL);
+            // value fuzhi为null
             dictSetVal(db->dict,de,NULL);
         }
     }
@@ -106,7 +113,9 @@ int dbAsyncDelete(redisDb *db, robj *key) {
     /* Release the key-val pair, or just the key if we set the val
      * field to NULL in order to lazy free it later. */
     if (de) {
-        dictFreeUnlinkedEntry(db->dict,de);
+        // 释放内存
+        dictFreeUnlinkedEntry(db->dict, de);
+        // 集群 删除映射表中的key
         if (server.cluster_enabled) slotToKeyDel(key);
         return 1;
     } else {
@@ -130,9 +139,12 @@ void freeObjAsync(robj *o) {
  * lazy freeing. */
 void emptyDbAsync(redisDb *db) {
     dict *oldht1 = db->dict, *oldht2 = db->expires;
+    // 清空数据,不是删除db 所以要创建一个空的dict 和一个空的expires
     db->dict = dictCreate(&dbDictType,NULL);
     db->expires = dictCreate(&keyptrDictType,NULL);
+    // 添加到懒删除列表
     atomicIncr(lazyfree_objects,dictSize(oldht1));
+    // 创建后台JOB
     bioCreateBackgroundJob(BIO_LAZY_FREE,NULL,oldht1,oldht2);
 }
 

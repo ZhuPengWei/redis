@@ -52,19 +52,24 @@
  * The parameter 'now' is the current time in milliseconds as is passed
  * to the function to avoid too many gettimeofday() syscalls. */
 int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
+    // 获得过期时间
     long long t = dictGetSignedIntegerVal(de);
+    // 过期了
     if (now > t) {
         sds key = dictGetKey(de);
         robj *keyobj = createStringObject(key,sdslen(key));
-
+        // expire命令传播
         propagateExpire(db,keyobj,server.lazyfree_lazy_expire);
+        // 异步过期处理
         if (server.lazyfree_lazy_expire)
             dbAsyncDelete(db,keyobj);
         else
             dbSyncDelete(db,keyobj);
+        // 键空间通知
         notifyKeyspaceEvent(NOTIFY_EXPIRED,
             "expired",keyobj,db->id);
         decrRefCount(keyobj);
+        // server的过期键计数+1
         server.stat_expiredkeys++;
         return 1;
     } else {
@@ -94,15 +99,24 @@ int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
  * executed, where the time limit is a percentage of the REDIS_HZ period
  * as specified by the ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC define. */
 
+/**
+ * 定期删除
+ * @param type  快速-1、慢速-0
+ */
 void activeExpireCycle(int type) {
     /* This function has some global state in order to continue the work
      * incrementally across calls. */
+    // 上次执行完之后的db
     static unsigned int current_db = 0; /* Last DB tested. */
+    //
     static int timelimit_exit = 0;      /* Time limit hit in previous call? */
+    // 上次执行时间
     static long long last_fast_cycle = 0; /* When last fast cycle ran. */
 
     int j, iteration = 0;
     int dbs_per_call = CRON_DBS_PER_CALL;
+
+    // 当前时间、执行时长、
     long long start = ustime(), timelimit, elapsed;
 
     /* When clients are paused the dataset should be static not just from the
@@ -114,8 +128,11 @@ void activeExpireCycle(int type) {
         /* Don't start a fast cycle if the previous cycle did not exit
          * for time limit. Also don't repeat a fast cycle for the same period
          * as the fast cycle total duration itself. */
+        // 没到执行的时间
         if (!timelimit_exit) return;
+        // 当前时间小于执行间隔
         if (start < last_fast_cycle + ACTIVE_EXPIRE_CYCLE_FAST_DURATION*2) return;
+        // 可执行 当前时间为执行开始时间
         last_fast_cycle = start;
     }
 
@@ -133,11 +150,14 @@ void activeExpireCycle(int type) {
      * per iteration. Since this function gets called with a frequency of
      * server.hz times per second, the following is the max amount of
      * microseconds we can spend in this function. */
+    // 计算慢速执行时长
     timelimit = 1000000*ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC/server.hz/100;
     timelimit_exit = 0;
     if (timelimit <= 0) timelimit = 1;
 
+    // 如果是快速过期删除
     if (type == ACTIVE_EXPIRE_CYCLE_FAST)
+        // 执行时长= 执行时间间隔
         timelimit = ACTIVE_EXPIRE_CYCLE_FAST_DURATION; /* in microseconds. */
 
     /* Accumulate some global stats as we expire keys, to have some idea
@@ -146,6 +166,7 @@ void activeExpireCycle(int type) {
     long total_sampled = 0;
     long total_expired = 0;
 
+    // 循环每一个db
     for (j = 0; j < dbs_per_call && timelimit_exit == 0; j++) {
         int expired;
         redisDb *db = server.db+(current_db % server.dbnum);
@@ -164,10 +185,13 @@ void activeExpireCycle(int type) {
             iteration++;
 
             /* If there is nothing to expire try next DB ASAP. */
+            //  num是过期字典的大小 如果是0
             if ((num = dictSize(db->expires)) == 0) {
+                // 平均有效期为0
                 db->avg_ttl = 0;
                 break;
             }
+            // 获得db过期字典的槽的数量
             slots = dictSlots(db->expires);
             now = mstime();
 
@@ -186,12 +210,15 @@ void activeExpireCycle(int type) {
             if (num > ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP)
                 num = ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP;
 
+            // 从过期字典中选择一定的key
             while (num--) {
                 dictEntry *de;
                 long long ttl;
-
+                // 从过期字典中随机选择key
                 if ((de = dictGetRandomKey(db->expires)) == NULL) break;
+                // 计算有效期
                 ttl = dictGetSignedIntegerVal(de)-now;
+                // 是否过期并且对过期键删除
                 if (activeExpireCycleTryExpire(db,de,now)) expired++;
                 if (ttl > 0) {
                     /* We want the average TTL of keys yet not expired. */
@@ -412,25 +439,40 @@ int checkAlreadyExpired(long long when) {
  *
  * unit is either UNIT_SECONDS or UNIT_MILLISECONDS, and is only used for
  * the argv[2] parameter. The basetime is always specified in milliseconds. */
+/**
+ * 设置key的过期时间
+ *
+ * @param c 客户端
+ * @param basetime 基准时间
+ * @param unit  单位 UNIT_SECOND:秒
+ */
 void expireGenericCommand(client *c, long long basetime, int unit) {
+
+    // 获得参数 argv[0]:expire argv[1]:key argv[2]:time
     robj *key = c->argv[1], *param = c->argv[2];
     long long when; /* unix time in milliseconds when the key will expire. */
 
     if (getLongLongFromObjectOrReply(c, param, &when, NULL) != C_OK)
         return;
 
+    // 单位是秒
     if (unit == UNIT_SECONDS) when *= 1000;
+
+    // 加基准时间
     when += basetime;
 
     /* No key, return zero. */
+    // 从db中找key 没找到 返回0
     if (lookupKeyWrite(c->db,key) == NULL) {
         addReply(c,shared.czero);
         return;
     }
-
+    // key过期 && server没有载入数据 && 主机
+    // 可以删除key
     if (checkAlreadyExpired(when)) {
         robj *aux;
 
+        // 异步?
         int deleted = server.lazyfree_lazy_expire ? dbAsyncDelete(c->db,key) :
                                                     dbSyncDelete(c->db,key);
         serverAssertWithInfo(c,key,deleted);
@@ -438,12 +480,20 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
 
         /* Replicate/AOF this as an explicit DEL or UNLINK. */
         aux = server.lazyfree_lazy_expire ? shared.unlink : shared.del;
+
+        // 重写修改客户端的参数数据
         rewriteClientCommandVector(c,2,aux,key);
+
         signalModifiedKey(c->db,key);
+
+        // 发送键空间通知 del
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",key,c->db->id);
         addReply(c, shared.cone);
         return;
-    } else {
+    }
+    // 是从节点 正在加载数据 不能删除key
+    else {
+        // 设置过期时间
         setExpire(c,c->db,key,when);
         addReply(c,shared.cone);
         signalModifiedKey(c->db,key);
@@ -491,7 +541,9 @@ void ttlGenericCommand(client *c, int output_ms) {
     }
     if (ttl == -1) {
         addReplyLongLong(c,-1);
-    } else {
+    }
+    // 响应有效时长
+    else {
         addReplyLongLong(c,output_ms ? ttl : ((ttl+500)/1000));
     }
 }
