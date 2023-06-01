@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0) #cmake版本需求
-project(redis5.0)      #工程
+project(redis)      #工程
 
 set(CMAKE_BUILD_TYPE "Debug")
 
