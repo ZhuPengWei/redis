@@ -121,6 +121,8 @@ set(SRC_SERVER_TMP
         )
 set(SRC_SERVER src/server.c ${SRC_SERVER_TMP})
 set(SRC_CLI
+        src/crcspeed.c
+        src/crcspeed.h
         src/anet.c
         src/sds.c
         src/adlist.c
@@ -129,6 +131,8 @@ set(SRC_CLI
         src/release.c
         src/ae.c
         src/crc64.c
+        src/mt19937-64.c
+        src/mt19937-64.h
         src/crc16.c
         src/dict.c
         src/siphash.c

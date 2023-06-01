@@ -152,7 +152,7 @@ typedef void (dictScanBucketFunction)(void *privdata, dictEntry **bucketref);
 
 /* If our unsigned long type can store a 64 bit number, use a 64 bit PRNG. */
 #if ULONG_MAX >= 0xffffffffffffffff
-#define randomULong() ((unsigned long) genrand64_int64())
+#define randomULong() random()
 #else
 #define randomULong() random()
 #endif
